@@ -1,0 +1,6 @@
+|| Local Project Settings Settings Database -- DO NOT EDIT
+{Settings
+    {Entry key = "file-locations", value = "\{\"test.curl\" 48 54 48 54\}"}
+    {Entry key = "current-target", value = ""}
+    {Entry key = "open-files", value = "\{\"test.curl\"\}"}
+}

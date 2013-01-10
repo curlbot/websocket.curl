@@ -1,0 +1,71 @@
+||| Copyright (C) SCSK Corp. All Rights Reserved.
+
+||| Licensed under the Apache License, Version 2.0 (the "License");
+||| you may not use this file except in compliance with the License.
+||| You may obtain a copy of the License at
+||| 
+|||     http://www.apache.org/licenses/LICENSE-2.0
+||| 
+||| Unless required by applicable law or agreed to in writing, software
+||| distributed under the License is distributed on an "AS IS" BASIS,
+||| WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+||| See the License for the specific language governing permissions and
+||| limitations under the License.
+
+|||
+||| @author
+|||
+
+|| strings to ByteArray
+{define-proc {to-bytes str:String}:ByteArray
+
+    def bytes = {ByteArray}
+    {with-open-streams 
+        stream = {TranscodingTextOutputStream 
+                     {ByteArrayOutputStream bytes},
+                     CharEncoding.utf8,
+                     false
+                 }
+     do
+        {format out = stream, "%s", str}
+    }
+    {return bytes}
+}
+
+
+|| hex encode/decode
+{define-proc {hex-encode bytes:ByteVec}:String
+    def buf = {StringBuf efficient-size = bytes.size * 2}
+    {for b in bytes do
+        {buf.append {nibble-to-hex {bit-srl b, 4}}}
+        {buf.append {nibble-to-hex b}}
+    }
+    {return {buf.to-String}}
+}
+{define-proc {nibble-to-hex ch:int}:char
+    {return "0123456789abcdef"[{bit-and ch, 0xF}]}
+}
+
+{define-proc {hex-decode str:String}:ByteVec
+    def bytes = {ByteVec max-size = str.size div 2}
+    {for i:int = 0 below str.size step 2 do
+        {bytes.append {hex-pair-to-int str[i], str[i + 1]} asa byte}
+    }
+    {return bytes}
+}
+{define-proc {hex-digit-to-int ch:char}:int
+    {return
+        {if ch <= '9' and ch >= '0' then
+            ch - '0'
+         elseif ch <= 'F' and ch >= 'A' then
+            ch - 'A' + 10
+         elseif ch <= 'f' and ch >= 'a' then
+            ch - 'a' + 10
+         else
+            -1
+        }
+    }
+}
+{define-proc {hex-pair-to-int c1:char, c2:char}:int
+    {return {hex-digit-to-int c1} * 16 + {hex-digit-to-int c2}}
+}

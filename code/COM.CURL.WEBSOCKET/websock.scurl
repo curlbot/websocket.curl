@@ -1,0 +1,460 @@
+||| Copyright (C) SCSK Corp. All Rights Reserved.
+
+||| Licensed under the Apache License, Version 2.0 (the "License");
+||| you may not use this file except in compliance with the License.
+||| You may obtain a copy of the License at
+||| 
+|||     http://www.apache.org/licenses/LICENSE-2.0
+||| 
+||| Unless required by applicable law or agreed to in writing, software
+||| distributed under the License is distributed on an "AS IS" BASIS,
+||| WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+||| See the License for the specific language governing permissions and
+||| limitations under the License.
+
+|||
+||| @author
+|||
+
+{import * from CURL.IO.SOCKET}
+{import * from CURL.LANGUAGE.REGEXP}
+
+||
+|| The WebSocket API
+||
+
+|| The readyState attribute represents the state of the connection. 
+|| It can have the following values:
+||
+||  -CONNECTING (numeric value 0)
+||     The connection has not yet been established.
+||  -OPEN (numeric value 1)
+||     The Web Socket connection is established and communication is possible.
+||  -CLOSED (numeric value 2)
+||     The connection has been closed or could not be opened.
+|| When the object is created its readyState must be set to CONNECTING (0).
+||
+{define-enum public ReadyState
+    CONNECTING = 0,
+    OPEN = 1,
+    CLOSED = 2
+}
+
+
+|||
+||| WebSocket client
+|||
+{define-class public open WebSocket
+  {inherits EventTarget}
+
+  || The URL attribute must return the result of resolving the URL that was 
+  || passed to the constructor. (It doesn't matter what it is resolved 
+  || relative to, since we already know it is an absolute URL.)
+  field public-get private-set URL:Url || DOMString
+
+  field public-get private-set ready-state:ReadyState || uint16
+
+  || The bufferedAmount attribute must return the number of bytes that 
+  || have been queued but not yet sent. If the connection is closed, 
+  || this attribute's value will only increase with each call to 
+  || the send() method (the number does not reset to zero once 
+  || the connection closes).
+  field public-get private-set buffered-amount:uint64
+
+  field private socket:DataTCPSocket
+  field private receive-stream:#DataSocketByteInputStream
+  ||field private protocol-version:int || e.g) draft75
+
+  || The send(data) method transmits data using the connection. If the 
+  || readyState attribute is CONNECTING, it must raise an INVALID_STATE_ERR 
+  || exception. If the data argument has any unpaired surrogates, then it must 
+  || raise SYNTAX_ERR. If the connection is established, and the string has 
+  || no unpaired surrogates, then the user agent must send data using the 
+  || Web Socket. If the data cannot be sent, e.g. because it would need to 
+  || be buffered but the buffer is full, the user agent must close the 
+  || Web Socket connection. The method must then return true if the connection 
+  || is still established (and the data was queued or sent successfully), 
+  || or false if the connection is closed (e.g. because the user agent just 
+  || had a buffer overflow and failed to send the data).
+
+|# TODO: for old version #|
+  {method public {send
+                     data:String || DOMString
+                 }:bool
+
+    {with-open-streams out = {self.socket.to-OutputStream} do
+|| FIXME: Doesn't work on Tomcat 7 or version 13.
+        {out.write-one 0x00}
+        {out.write {to-bytes data}}
+        {out.write-one 0xff}
+        {out.flush}
+    }
+
+    || TODO
+    ||set self.buffered-amount = self.buffered-amount + data.size
+
+    {return true}
+  }
+
+
+|# TODO: for version 13 #|
+  {method public {send-2
+                     payload:String
+                 }:bool
+    {output "send " & payload}
+    def OPCODE-CONTINUATION = 0x0
+    def OPCODE-TEXT = 0x1
+    def OPCODE-BINARY = 0x2
+    def OPCODE-CLOSE = 0x8
+    def OPCODE-PING = 0x9
+    def OPCODE-PONG = 0xa
+    def out = {self.socket.to-OutputStream}
+||    {with-open-streams out = {self.socket.to-OutputStream} do
+        def opcode = OPCODE-TEXT
+        def fin = 1
+        def rsv1 = 0 || not deflate_frame
+        def mask-bit = {bit-sll 1, 7}
+        def header1 = ({bit-or {bit-sll fin, 7}, {bit-sll rsv1, 6}, opcode})
+        {out.write-one header1}
+        def size = payload.size
+||        {if size <= 125 then
+            def header2 = {bit-or mask-bit, size} asa uint8
+            {out.write-one header2}
+||         else
+            ||TODO
+||        }
+        {dump header1, header2}
+        {out.write {to-bytes payload}}
+    {out.write-one 0xff}
+        {out.flush}
+||    }
+
+    {return true}
+  }
+
+  {method public {close}:void
+
+    {output "Closed Websocket"}
+    {with-open-streams out = {self.socket.to-OutputStream} do
+        {out.write-one 0xff}
+        {out.write-one 0x00}
+        {out.flush}
+    }
+
+    {if-non-null receive-stream = self.receive-stream then
+        {if receive-stream.open? then
+            {receive-stream.close}
+        }
+    }
+    {self.socket.close}
+
+    set self.ready-state = ReadyState.CLOSED
+
+    {self.handle-event {CloseEvent}}
+  }
+
+  {method private {parse-url
+                      url:Url
+                  }:(path:String, hostname:String, port:uint16)
+    
+    let name:String = url.name
+    let hostname:#String, port:#String, path:#String
+    {if {name.prefix? "ws://"} then
+        set name = {name.substr 5, name.size - 5}
+        set port = "80"
+     else
+        {if {name.prefix? "wss://"} then
+            set name = {name.substr 6, name.size - 6}
+            set port = "443"
+         else
+            {throw {Exception {format "Wrong url. %s", name}}}
+        }
+    }
+    let (si:int, ei:int) = ({name.find ':'}, {name.find '/'})
+    {if ei < 0 then
+        set ei = name.size
+    }
+    {if si > 0 then
+        set hostname = {name.substr 0, si}
+        set port = {name.substr si + 1, ei - si - 1}
+     else
+        set hostname = {name.substr 0, ei}
+    }
+    set path = {name.substr ei, name.size - ei}
+    {if path == null or path == "" then
+        set path = "/"
+    }
+    {return {non-null path}, {non-null hostname}, {port.to-int} asa uint16}
+  }
+
+|# might be old
+  {method private {generate-sec-websocket-key}:(uint32, String)
+
+    def random = {Random}
+    def spaces = {random.next-in-range 1, 12} asa uint32
+    def max = (max-uint32 div spaces) asa uint32
+    def dummy = (max div 2 asa uint32) asa int32
+    def number = ({random.next-in-range -dummy, dummy} + dummy) asa uint32
+    def product = number * spaces
+    let key:String = product & ""
+    {for i = 0 below spaces do
+        def pos = {random.next-in-range 1, key.size - 1}
+        set key = {key.substr 0, pos} & " " & {key.substr pos, key.size - pos}
+    }
+    def available-chars = {{Array-of int}}
+    {for i = 0x21 below 0x2f + 1 do
+        {available-chars.append i}
+    }
+    {for i = 0x3a below 0x7e + 1 do
+        {available-chars.append i}
+    }
+    def n = {random.next-in-range 1, 12}
+    {for i = 0 below n do
+        def idx = {random.next-in-range 0, available-chars.size - 1}
+        def ch = available-chars[idx] asa char
+        def pos = {random.next-in-range 0, key.size}
+        set key = {key.substr 0, pos} & ch & {key.substr pos, key.size - pos}
+    }
+    {return number, key}
+  }
+#|
+
+  {method private {generate-sec-websocket-key}:String
+    def random = {Random}
+    def bytes = {ByteArray.from-size 16, 0}
+    {for i = 0 below 16 do
+        set bytes[i] = {random.next-in-range 0, 255} asa byte
+    }
+    {return {base64-encode bytes}}
+  }
+
+
+  {method private {generate-key3}:ByteArray
+    def random = {Random}
+    def bytes = {ByteArray.from-size 8, 0}
+    {for i = 0 below 8 do
+        set bytes[i] = {random.next-in-range 0, 255} asa byte
+    }
+    {return bytes}
+  }
+
+  {method private {handshake
+                      path:String, 
+                      hostname:String, 
+                      port:uint16,
+                      protocol:#String
+                  }:void
+
+    {with-open-streams out = {self.socket.to-OutputStream} do
+    
+        def host = 
+            {if port != 80 then 
+                {format "%s:%d", hostname, port} 
+             else
+                {format "%s", hostname}
+            }
+
+        def origin = "http://" & host
+
+        || The handshake from the client looks as follows:
+        ||   GET /demo HTTP/1.1
+        ||   Upgrade: WebSocket
+        ||   Connection: Upgrade
+        ||   Host: example.com
+        ||   Origin: http://example.com
+        ||   WebSocket-Protocol: sample
+||        def (num1, key1) = {self.generate-sec-websocket-key}
+||        def (num2, key2) = {self.generate-sec-websocket-key}
+        def key = {self.generate-sec-websocket-key}
+        {dump path, host, origin, protocol, key} ||, key1, key2}
+        {out.write
+            {to-bytes
+                {format
+                    "GET %s HTTP/1.1\r\n" &
+                    "Host: %s\r\n" &
+                    "Connection: Upgrade\r\n" &
+|| FIXME: Doesn't work on Tomcat 7 or version 13.
+||                    "Sec-WebSocket-Key2: %s\r\n" &
+||                    "Sec-WebSocket-Protocol: %s\r\n" &
+                    "Upgrade: websocket\r\n" &
+||                    "Sec-WebSocket-Key1: %s\r\n" &
+                    "Sec-WebSocket-Key: %s\r\n" &
+                    "Sec-WebSocket-Version: 13\r\n" &
+                    "Origin: %s\r\n" &
+                    "\r\n",
+                    path, host, |#key2, protocol,#| key, origin
+                }
+            }
+        }
+        || key3
+|| FIXME: Doesn't work on Tomcat 7 or version 13.
+        def key3 = {self.generate-key3}
+        {out.write key3}
+        {out.flush}
+
+        || The handshake from the server looks as follows:
+        ||   HTTP/1.1 101 Web Socket Protocol Handshake
+        ||   Upgrade: WebSocket
+        ||   Connection: Upgrade
+        ||   WebSocket-Origin: http://example.com
+        ||   WebSocket-Location: ws://example.com/demo
+        ||   WebSocket-Protocol: sample
+        {with-open-streams in = {self.socket.to-InputStream} do
+            def buf = {StringBuf}
+            {while true do
+                def b = {in.read-one} || NOTE: eof? is always false
+                {if b == '\r' then
+                    {if {in.read-one} == '\n' then
+                        {if buf.size == 0 then
+                            {break}
+                        }
+                        let m:Matcher = 
+                            {Matcher 
+                                |"(?P<key>.*):(?P<value>.*)"|,
+                                backwards? = true
+                            }
+                        def line = {buf.to-String}
+                        {if-non-null state = {m.match line} 
+                         then
+                            def (key, value) = (state["key"], state["value"])
+                            {dump key, value}
+                         else
+                            set m = {Matcher "[^ ]* ([^ ]*) .*"}
+                            {if-non-null state = {m.match line} then
+                                def code = state[1]
+                                {if code != "101" then
+                                    {throw {Exception {format "unexpected code in: %s", code}}}
+                                }
+                            }
+                        }
+                        {buf.clear}
+                     else
+                        {throw {Exception "expected LF after line."}}
+                    }
+                 else
+                    {buf.append b asa char}
+                }
+            }
+
+|#
+            || response created on server
+            def response = {ByteVec max-size = 16}
+            {for i = 0 below 16 do
+                 {response.append {in.read-one}}
+            }
+
+            || response created on client
+            def challenge = {ByteArray}
+            {challenge.concat 
+                {ByteArray.from-FastArray 
+                    {hex-decode {format "%.8x", num1}}
+                }
+            }
+            {challenge.concat 
+                {ByteArray.from-FastArray 
+                    {hex-decode {format "%.8x", num2}}
+                }
+            }
+            {challenge.concat key3}
+
+            def md = {MD5-Digester} || FIXME: maybe SHA-1 since v13
+            {md.start}
+            {for c in challenge do
+                {md.add-byte c}
+            }
+
+            def expected-response = {format "%s", {md.finish}}
+            def actual-response = {hex-encode response}
+            {dump expected-response, actual-response}
+#|
+           
+|| FIXME: not work on v13
+||            {if not {actual-response.equal? 
+||                        expected-response, ignore-case? = true} 
+||             then
+||                {dump expected-response, actual-response}
+||                {error "The key3 is wrong response."} || TODO
+||            }
+        }
+    }
+  }
+
+  {constructor public {default
+                          url:Url, || ws:// or wss://
+                          protocol:#String = null,
+                          ...:EventHandler
+                      }
+
+    set self.ready-state = ReadyState.CONNECTING
+    set self.URL = url
+    def (path, hostname, port) = {self.parse-url url}
+    set self.socket =
+        {DataTCPSocket remote-port = port, remote-name = hostname}
+    {try 
+        {self.socket.connect}
+        {self.handshake path, hostname, port, protocol}
+
+        {construct-super ...}
+
+        || for EventMessage
+        def async-receive-proc = 
+            {proc {}:void
+                {if-non-null receive-stream = self.receive-stream then
+                    {if receive-stream.open? then
+                        ||{receive-stream.close} || FIXME: error?
+                    }
+                 else
+                    set self.receive-stream = {self.socket.to-InputStream}
+                }
+
+                {self.receive-stream.async-read
+                    partial? = true,
+                    {on e:AsyncStreamReadEvent do
+
+                        {if-non-null ex = e.exception then
+                            {dump ex} ||TODO
+                         elseif e.canceled? then
+                            {dump e.canceled?}
+                         else
+                            def bytes = e.data asa ByteArray
+|| FIXME: Doesn't work on Tomcat 7 or version 13.
+                            ||{if bytes[0] == 0x00 and 
+                            ||    bytes[bytes.size - 1] == 0xff 
+                            || then
+                            ||    {bytes.remove 0}
+                            ||    {bytes.remove bytes.size - 1}
+                            ||    {self.handle-event {MessageEvent bytes}}
+                            ||}
+                            {self.handle-event {MessageEvent bytes}}
+                        }
+                        {async-receive-proc}
+                    }
+                }
+            }
+        {async-receive-proc}
+
+        set self.ready-state = ReadyState.OPEN
+        {self.handle-event {OpenEvent}}
+
+        {register-exit-proc 
+            {proc {}:void
+                {output "closed before exiting."}
+                {self.socket.close}
+            }
+        }
+     catch e:Exception do
+        set self.ready-state = ReadyState.CLOSED
+        {throw e}
+    }
+  }
+}
+
+|| INVALID_STATE_ERR
+||{define-class public InvalidStateErr
+||  {inherits Exception}
+||
+||  {constructor package {default message}
+||    {construct-super message}
+||  }
+||}
+

@@ -1,0 +1,75 @@
+||| Copyright (C) SCSK Corp. All Rights Reserved.
+
+||| Licensed under the Apache License, Version 2.0 (the "License");
+||| you may not use this file except in compliance with the License.
+||| You may obtain a copy of the License at
+||| 
+|||     http://www.apache.org/licenses/LICENSE-2.0
+||| 
+||| Unless required by applicable law or agreed to in writing, software
+||| distributed under the License is distributed on an "AS IS" BASIS,
+||| WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+||| See the License for the specific language governing permissions and
+||| limitations under the License.
+
+|||
+||| @author
+|||
+
+{curl 8.0 applet}
+{applet manifest = "manifest.mcurl"}
+
+{import * from COM.CURL.WEBSOCKET}
+
+{define-proc {debug bytes:ByteArray}:void
+    {output {bytes-to-string bytes}}
+}
+
+{define-proc {bytes-to-string bytes:ByteArray}:String
+    def buf = {StringBuf}
+    {for b in bytes do
+        {buf.append b asa char}
+        ||TODO: line -> "\r\n"
+    }
+    {return {buf.to-String}}
+}
+
+{value
+    let ws:#WebSocket
+    def disp = 
+        {VBox
+            {spaced-hbox
+                {CommandButton
+                    label = "Connect!",
+                    {on Action do
+                        set ws = 
+                            {WebSocket
+                                || Tomcat 7
+                                ||{url "ws://localhost:8080/websock/wsServer"},
+                                || node.js
+                                {url "ws://localhost:10080/"},
+                                {on e:MessageEvent do
+                                    {disp.add {bytes-to-string e.data}}
+                                }
+                            }
+                    }
+                },
+
+                {CommandButton
+                    label = "Send",
+                    {on Action do
+                        {ws.send "testtest"}
+                    }
+                },
+
+                {CommandButton
+                    label = "Close",
+                    {on Action do
+                        {ws.close}
+                    }
+                }
+            }
+        }
+
+    disp
+}
