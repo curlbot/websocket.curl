@@ -47,43 +47,18 @@
 {define-class public open WebSocket
   {inherits EventTarget}
 
-  || The URL attribute must return the result of resolving the URL that was 
-  || passed to the constructor. (It doesn't matter what it is resolved 
-  || relative to, since we already know it is an absolute URL.)
   field public-get private-set URL:Url || DOMString
-
   field public-get private-set ready-state:ReadyState || uint16
-
-  || The bufferedAmount attribute must return the number of bytes that 
-  || have been queued but not yet sent. If the connection is closed, 
-  || this attribute's value will only increase with each call to 
-  || the send() method (the number does not reset to zero once 
-  || the connection closes).
   field public-get private-set buffered-amount:uint64
-
   field private socket:DataTCPSocket
   field private receive-stream:#DataSocketByteInputStream
   ||field private protocol-version:int || e.g) draft75
 
-  || The send(data) method transmits data using the connection. If the 
-  || readyState attribute is CONNECTING, it must raise an INVALID_STATE_ERR 
-  || exception. If the data argument has any unpaired surrogates, then it must 
-  || raise SYNTAX_ERR. If the connection is established, and the string has 
-  || no unpaired surrogates, then the user agent must send data using the 
-  || Web Socket. If the data cannot be sent, e.g. because it would need to 
-  || be buffered but the buffer is full, the user agent must close the 
-  || Web Socket connection. The method must then return true if the connection 
-  || is still established (and the data was queued or sent successfully), 
-  || or false if the connection is closed (e.g. because the user agent just 
-  || had a buffer overflow and failed to send the data).
-
-|# TODO: for old version #|
+  || FIXME: for old version
   {method public {send
                      data:String || DOMString
                  }:bool
-
     {with-open-streams out = {self.socket.to-OutputStream} do
-|| FIXME: Doesn't work on Tomcat 7 or version 13.
         {out.write-one 0x00}
         {out.write {to-bytes data}}
         {out.write-one 0xff}
@@ -97,8 +72,8 @@
   }
 
 
-|# TODO: for version 13 #|
-  {method public {send-2
+|# TODO: for version 13 
+  {method public {send
                      payload:String
                  }:bool
     {output "send " & payload}
@@ -109,7 +84,7 @@
     def OPCODE-PING = 0x9
     def OPCODE-PONG = 0xa
     def out = {self.socket.to-OutputStream}
-||    {with-open-streams out = {self.socket.to-OutputStream} do
+    {with-open-streams out = {self.socket.to-OutputStream} do
         def opcode = OPCODE-TEXT
         def fin = 1
         def rsv1 = 0 || not deflate_frame
@@ -117,24 +92,21 @@
         def header1 = ({bit-or {bit-sll fin, 7}, {bit-sll rsv1, 6}, opcode})
         {out.write-one header1}
         def size = payload.size
-||        {if size <= 125 then
+        {if size <= 125 then
             def header2 = {bit-or mask-bit, size} asa uint8
             {out.write-one header2}
-||         else
+         else
             ||TODO
-||        }
-        {dump header1, header2}
+        }
         {out.write {to-bytes payload}}
-    {out.write-one 0xff}
+        {out.write-one 0xff}
         {out.flush}
-||    }
-
+    }
     {return true}
   }
-
+#|
+  
   {method public {close}:void
-
-    {output "Closed Websocket"}
     {with-open-streams out = {self.socket.to-OutputStream} do
         {out.write-one 0xff}
         {out.write-one 0x00}
@@ -147,9 +119,7 @@
         }
     }
     {self.socket.close}
-
     set self.ready-state = ReadyState.CLOSED
-
     {self.handle-event {CloseEvent}}
   }
 
@@ -246,7 +216,6 @@
                   }:void
 
     {with-open-streams out = {self.socket.to-OutputStream} do
-    
         def host = 
             {if port != 80 then 
                 {format "%s:%d", hostname, port} 
@@ -263,26 +232,19 @@
         ||   Host: example.com
         ||   Origin: http://example.com
         ||   WebSocket-Protocol: sample
-||        def (num1, key1) = {self.generate-sec-websocket-key}
-||        def (num2, key2) = {self.generate-sec-websocket-key}
         def key = {self.generate-sec-websocket-key}
-        {dump path, host, origin, protocol, key} ||, key1, key2}
         {out.write
             {to-bytes
                 {format
                     "GET %s HTTP/1.1\r\n" &
                     "Host: %s\r\n" &
                     "Connection: Upgrade\r\n" &
-|| FIXME: Doesn't work on Tomcat 7 or version 13.
-||                    "Sec-WebSocket-Key2: %s\r\n" &
-||                    "Sec-WebSocket-Protocol: %s\r\n" &
                     "Upgrade: websocket\r\n" &
-||                    "Sec-WebSocket-Key1: %s\r\n" &
                     "Sec-WebSocket-Key: %s\r\n" &
                     "Sec-WebSocket-Version: 13\r\n" &
                     "Origin: %s\r\n" &
                     "\r\n",
-                    path, host, |#key2, protocol,#| key, origin
+                    path, host, key, origin
                 }
             }
         }
@@ -414,7 +376,7 @@
                         {if-non-null ex = e.exception then
                             {dump ex} ||TODO
                          elseif e.canceled? then
-                            {dump e.canceled?}
+                            {dump e.canceled?} ||TODO
                          else
                             def bytes = e.data asa ByteArray
 || FIXME: Doesn't work on Tomcat 7 or version 13.

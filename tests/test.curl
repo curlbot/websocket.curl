@@ -21,15 +21,10 @@
 
 {import * from COM.CURL.WEBSOCKET}
 
-{define-proc {debug bytes:ByteArray}:void
-    {output {bytes-to-string bytes}}
-}
-
 {define-proc {bytes-to-string bytes:ByteArray}:String
     def buf = {StringBuf}
     {for b in bytes do
         {buf.append b asa char}
-        ||TODO: line -> "\r\n"
     }
     {return {buf.to-String}}
 }
