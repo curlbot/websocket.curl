@@ -17,7 +17,7 @@
 |||
 
 {import * from CURL.IO.SOCKET}
-{import * from CURL.LANGUAGE.REGEXP}
+{import * from CURL.IO.HTTP}
 
 ||
 || The WebSocket API
@@ -30,102 +30,632 @@
 ||     The connection has not yet been established.
 ||  -OPEN (numeric value 1)
 ||     The Web Socket connection is established and communication is possible.
-||  -CLOSED (numeric value 2)
+||  -CLOSING (numeric value 2)
+||     The connection has started closing.
+||  -CLOSED (numeric value 3)
 ||     The connection has been closed or could not be opened.
 || When the object is created its readyState must be set to CONNECTING (0).
 ||
-{define-enum public ReadyState
-    CONNECTING = 0,
+{doc-next
+    {purpose
+        Enum for the state of a {docref WebSocket} available in
+        {docref WebSocket.ready-state}.
+    }
+    {details
+        {itemize
+            {item {ctext CONNECTING} -
+                The initial state of the {docref WebSocket} when it has not
+                completed the initial handshake.
+            }
+            {item {ctext OPEN} -
+                The state where the {docref WebSocket} is fully connected and
+                is ready to send and receive normal messages.
+                When the {docref WebSocket} goes into this state it sends a
+                {docref WebSocketOpenEvent}.
+            }
+            {item {ctext CLOSING} -
+                The state where the connection has started closing, usually
+                from a call to {docref WebSocket.close}.
+            }
+            {item {ctext CLOSED} -
+                The state where the {docref WebSocket} is totally closed,
+                either due to a failure to connect, or due to an error, or
+                due to completing the close handshake sequence.
+                When the {docref WebSocket} goes into this state it sends a
+                {docref WebSocketCloseEvent}.
+            }
+        }
+    }
+}
+{define-enum public WebSocketReadyState
+    CONNECTING = 0, || value is same as index for all.
     OPEN = 1,
-    CLOSED = 2
+    CLOSING = 2,
+    CLOSED = 3
 }
 
+{doc-next
+    {purpose
+        The current known web socket opcodes from
+        {link href = {abs-url "http://www.ietf.org/rfc/rfc6455.txt"},
+        RFC 6455 at ietf.org}.
+    }
+}
+{define-enum package WebSocketOpCode
+    CONTINUATION = 0x0,
+    TEXT = 0x1,
+    BINARY = 0x2,
+    CLOSE = 0x8,
+    PING = 0x9,
+    PONG = 0xa
+}
+
+{doc-next
+    {purpose
+        The officially defined close status values from 
+        {link href = {abs-url "http://www.ietf.org/rfc/rfc6455.txt"},
+        RFC 6455 at ietf.org}.
+    }
+}
+{define-enum public WebSocketCloseStatus
+    normal = 1000,
+    endpoint-going-away = 1001,
+    endpoint-protocol-error = 1002,
+    endpoint-data-type-error = 1003,
+    close-abnormal = 1006,
+    endpoint-non-utf8-error = 1007,
+    endpoint-policy-error = 1008,
+    endpoint-too-big-error = 1009,
+    endpoint-need-extension-error = 1010,
+    endpoint-unexpected-condition-error = 1011
+}
 
 |||
 ||| WebSocket client
 |||
+{doc-next
+    {purpose
+        Class that implements the WebSocket protocol.
+    }
+    {details
+        Implements the WebSocket protocol as defined in 
+        {link href = {abs-url "http://www.ietf.org/rfc/rfc6455.txt"}, RFC 6455 at ietf.org}.
+        Follows the basic API model of the
+        {link href = {abs-url "http://www.w3.org/TR/2011/WD-websockets-20110419/"},
+        WebSocket API draft 19 from w3.org} but with some name changes and
+        enhancements and not exactly the same error checking.
+    }
+}
 {define-class public open WebSocket
   {inherits EventTarget}
 
-  field public-get private-set URL:Url || DOMString
-  field public-get private-set ready-state:ReadyState || uint16
-  field public-get private-set buffered-amount:uint64
-  field private socket:DataTCPSocket
-  field private receive-stream:#DataSocketByteInputStream
-  ||field private protocol-version:int || e.g) draft75
-
-  || FIXME: for old version
-  {method public {send
-                     data:String || DOMString
-                 }:bool
-    {with-open-streams out = {self.socket.to-OutputStream} do
-        {out.write-one 0x00}
-        {out.write {to-bytes data}}
-        {out.write-one 0xff}
-        {out.flush}
+  {doc-next
+    {purpose
+        The {docref Url} for the WebSocket protocol endpoint that this
+        {docref WebSocket} is contacting.
     }
+    {details
+        Will start with {ctext "ws://"}.
+    }
+  }
+  field public-get private-set url:Url || DOMString
 
-    || TODO
-    ||set self.buffered-amount = self.buffered-amount + data.size
+  {doc-next
+    {purpose
+        The current state of the {docref WebSocket}.
+    }
+    {details
+        This will start at {docref WebSocketReadyState}{ctext .CONNECTING},
+        and change to {docref WebSocketReadyState}{ctext .OPEN} if this
+        {docref WebSocket} connects and handshakes with the endpoint.
+        Note that this will reflect the current state of the {docref WebSocket}
+        even if events about the state change have not been processed yet.
+    }
+  }
+  field public-get protected-set ready-state:WebSocketReadyState || uint16
 
-    {return true}
+  {doc-next
+    {purpose
+        The amount of data queued up to be written on this {docref WebSocket}.
+    }
+    {details
+        This is the amount of data, including any WebSocket protocol related
+        bytes, but not including any TCP/IP overhead, also note that this does
+        not include any data already passed to the OS, some or all of which may
+        not have been transmitted yet.
+    }
+  }
+  field public-get protected-set buffered-amount:uint64
+
+  {doc-next
+    {purpose
+        The underlying {docref DataTCPSocket}, if any used by the
+        {docref WebSocket}.
+    }
+    {details
+        This will be {ctext null} if {docref WebSocket.default} was passed
+        {ctext input-stream} and {ctext output-stream} or if the socket was
+        closed.  This will be closed by the {docref WebSocket} when the
+        {docref WebSocket} is closed or a socket
+        related error occurs.  The {docref WebSocket} will read and write
+        to streams from this {docref DataTCPSocket} at any time, so this is
+        only intended to allow the caller to set or check socket options.
+    }
+  }
+  field public-get protected-set socket:#DataTCPSocket
+
+  {doc-next
+    {purpose
+        The underlying {docref ByteInputStream} used by the
+        {docref WebSocket}.
+    }
+    {details
+        This will be {ctext null} if the {docref WebSocket} has closed.  This
+        will be closed by the {docref WebSocket} when the connecting is done
+        or an IO
+        related error occurs.  The {docref WebSocket} will read and write
+        to the streams at any time.
+    }
+    {notes
+        This will either be the value passed to {docref WebSocket.default} or
+        if there wasn't a value, one from {docref WebSocket.socket}.
+    }
+  }
+  field public-get protected-set input-stream:#ByteInputStream
+
+  {doc-next
+    {purpose
+        The underlying {docref ByteOutputStream} used by the
+        {docref WebSocket}.
+    }
+    {details
+        This will be {ctext null} if the {docref WebSocket} has closed.  This
+        will be closed by the {docref WebSocket} when the connecting is done
+        or an IO
+        related error occurs.  The {docref WebSocket} will read and write
+        to the streams at any time.
+    }
+    {notes
+        This will either be the value passed to {docref WebSocket.default} or
+        if there wasn't a value, one from {docref WebSocket.socket}.
+    }
+  }
+  field public-get protected-set output-stream:#ByteOutputStream
+
+  {doc-next
+    {purpose
+        The extensions {docref String} or {ctext null} passed to
+        {docref WebSocket.default}, that will be sent in the handshake to
+        the server endpoint.
+    }
+  }
+  field public-get private-set requested-extensions:#String
+
+  {doc-next
+    {purpose
+        The extensions {docref String} or {ctext null} returned by the
+        server endpoint in the handshake.
+    }
+    {notes
+        This is not checked by {docref WebSocket}.
+    }
+  }
+  field public-get private-set extensions:#String
+
+  {doc-next
+    {purpose
+        The protocols {docref String} or {ctext null} passed to
+        {docref WebSocket.default}, that will be sent in the handshake to
+        the server endpoint.
+    }
+  }
+  field public-get private-set requested-protocols:#String
+
+  {doc-next
+    {purpose
+        The protcol {docref String} or {ctext null} returned by the
+        server endpoint in the handshake.
+    }
+    {notes
+        This is checked against {docref WebSocket.requested-protocols} by
+        {docref WebSocket} during the handshake.
+    }
+  }
+  field public-get private-set protocol:#String
+
+  field protected constant read-bytes:ByteArray
+  field protected constant write-queue:{Dequeue-of ByteArray}
+  field protected async-write-pending?:bool
+  field protected fragmented-message:#ByteArray
+  field protected fragmented-opcode:int
+  field protected received-close?:bool
+  field protected enqueued-close?:bool
+  field protected sent-close?:bool
+  field protected handshake-key:#String
+  field protected http-url:#Url
+
+|| Version 13 header
+||       0                   1                   2                   3
+||      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+||     +-+-+-+-+-------+-+-------------+-------------------------------+
+||     |F|R|R|R| opcode|M| Payload len |    Extended payload length    |
+||     |I|S|S|S|  (4)  |A|     (7)     |             (16/64)           |
+||     |N|V|V|V|       |S|             |   (if payload len==126/127)   |
+||     | |1|2|3|       |K|             |                               |
+||     +-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+||     |     Extended payload length continued, if payload len == 127  |
+||     + - - - - - - - - - - - - - - - +-------------------------------+
+||     |                               |Masking-key, if MASK set to 1  |
+||     +-------------------------------+-------------------------------+
+||     | Masking-key (continued)       |          Payload Data         |
+||     +-------------------------------- - - - - - - - - - - - - - - - +
+  {method protected {append-header
+                        buffer:ByteArray,
+                        opcode:int,
+                        data-length:uint64,
+                        fin?:bool = true,
+                        mask:uint32 = 0
+                    }:void
+      {buffer.append
+          {bit-or {if fin? then 0x80 else 0}, {bit-and opcode, 0xF}} asa byte
+      }
+      def mask-byte:byte = {if mask != 0 then 0x80 else 0}
+      {if data-length <= 125 then
+          {buffer.append
+              {bit-or mask-byte, data-length} asa byte
+          }
+       elseif data-length <= max-uint16 then
+          {buffer.append {bit-or mask-byte, 126} asa byte}
+          {buffer.append {bit-srl data-length asa uint16, 8} asa byte}
+          {buffer.append {bit-and data-length asa uint16, 0xFF} asa byte}
+       elseif data-length <= max-int64 then
+          {buffer.append {bit-or mask-byte, 127} asa byte}
+          {buffer.append {bit-srl data-length, 56} asa byte}
+          {buffer.append {bit-srl data-length, 48} asa byte}
+          {buffer.append {bit-srl data-length, 40} asa byte}
+          {buffer.append {bit-srl data-length, 32} asa byte}
+          {buffer.append {bit-srl data-length, 24} asa byte}
+          {buffer.append {bit-srl data-length, 16} asa byte}
+          {buffer.append {bit-srl data-length, 8} asa byte}
+          {buffer.append {bit-and data-length, 0xFF} asa byte}
+       else
+      || FIXME: better Exception type.
+          {error "data-length is too big for a WebSocket."}
+      }
+      {if mask != 0 then
+          {buffer.append {bit-srl mask, 24} asa byte}
+          {buffer.append {bit-srl mask, 16} asa byte}
+          {buffer.append {bit-srl mask, 8} asa byte}
+          {buffer.append {bit-and mask, 0xFF} asa byte}
+      }
   }
 
-
-|# TODO: for version 13 
-  {method public {send
-                     payload:String
-                 }:bool
-    {output "send " & payload}
-    def OPCODE-CONTINUATION = 0x0
-    def OPCODE-TEXT = 0x1
-    def OPCODE-BINARY = 0x2
-    def OPCODE-CLOSE = 0x8
-    def OPCODE-PING = 0x9
-    def OPCODE-PONG = 0xa
-    def out = {self.socket.to-OutputStream}
-    {with-open-streams out = {self.socket.to-OutputStream} do
-        def opcode = OPCODE-TEXT
-        def fin = 1
-        def rsv1 = 0 || not deflate_frame
-        def mask-bit = {bit-sll 1, 7}
-        def header1 = ({bit-or {bit-sll fin, 7}, {bit-sll rsv1, 6}, opcode})
-        {out.write-one header1}
-        def size = payload.size
-        {if size <= 125 then
-            def header2 = {bit-or mask-bit, size} asa uint8
-            {out.write-one header2}
+  || returns things from header, including complete? to indicate if the
+  || whole header was read, in which case header-length will indicate
+  || the number of bytes in the header.
+  || data-length will be -1 asa uint64 if there is not enough bytes to
+  || calculate it properly.
+  {method protected {decode-header
+                        buffer:ByteArray
+                    }:(data-length:uint64,
+                       complete?:bool,
+                       opcode:int,
+                       fin?:bool,
+                       mask:uint32,
+                       header-length:int)
+    {if buffer.size < 1 then
+        {return -1 asa uint64, false, -1, false, 0, 2}
+    }
+    def opcode = {bit-and buffer[0], 0xF}
+    def fin? = ({bit-and buffer[0], 0x80} == 0x80)
+    let index:int = 1
+    {if buffer.size < index + 1 then
+        {return -1 asa uint64, false, opcode, fin?, 0, 2}
+    }
+    def mask? = ({bit-and buffer[index], 0x80} == 0x80)
+    def base-len = {bit-and buffer[index], 0x7F} asa byte
+    {inc index} 
+    def data-length =
+        {if base-len == 126 then
+            || 2 byte length
+            {inc index, 2}
+            {if buffer.size < index then
+                {return -1 asa uint64, false, opcode, fin?, 0,
+                    index + {if mask? then 4 else 0}}
+            }
+            {bit-or {bit-sll buffer[index - 2] asa uint64, 8},
+                buffer[index - 1] asa uint64}
+         elseif base-len == 127 then
+            || 8 byte length
+            {inc index, 8}
+            {if buffer.size < index then
+                {return -1 asa uint64, false, opcode, fin?, 0,
+                    index + {if mask? then 4 else 0}}
+            }
+            {bit-or {bit-sll buffer[index - 8] asa uint64, 56},
+                {bit-sll buffer[index - 7] asa uint64, 48},
+                {bit-sll buffer[index - 6] asa uint64, 40},
+                {bit-sll buffer[index - 5] asa uint64, 32},
+                {bit-sll buffer[index - 4] asa uint64, 24},
+                {bit-sll buffer[index - 3] asa uint64, 16},
+                {bit-sll buffer[index - 2] asa uint64, 8},
+                buffer[index - 1] asa uint64}
          else
-            ||TODO
+            || 7 bit length
+            base-len asa uint64
         }
-        {out.write {to-bytes payload}}
-        {out.write-one 0xff}
-        {out.flush}
-    }
-    {return true}
-  }
-#|
-  
-  {method public {close}:void
-    {with-open-streams out = {self.socket.to-OutputStream} do
-        {out.write-one 0xff}
-        {out.write-one 0x00}
-        {out.flush}
-    }
 
-    {if-non-null receive-stream = self.receive-stream then
-        {if receive-stream.open? then
-            {receive-stream.close}
+    def mask =
+        {if mask? then
+            {inc index, 4}
+            {if buffer.size < index then
+                {return data-length, false, opcode, fin?, 0, index}
+            }
+            {bit-or {bit-sll buffer[index - 4] asa uint32, 24},
+                {bit-sll buffer[index - 3] asa uint32, 16},
+                {bit-sll buffer[index - 2] asa uint32, 8},
+                buffer[index - 1] asa uint32
+            }
+         else
+            0 asa uint32
         }
-    }
-    {self.socket.close}
-    set self.ready-state = ReadyState.CLOSED
-    {self.handle-event {CloseEvent}}
+    {return data-length, true, opcode, fin?, mask, index}
   }
 
-  {method private {parse-url
-                      url:Url
-                  }:(path:String, hostname:String, port:uint16)
+  {method protected {apply-mask bytes:ByteArray, mask:uint32,
+                        start:int = 0, length:int = bytes.size
+                    }:void
+    {if mask == 0 then {return}}
+    def mask-bytes = {{FastArray-of byte}.from-size 4, 0}
+    set mask-bytes[0] = {bit-srl mask, 24} asa byte
+    set mask-bytes[1] = {bit-srl mask, 16} asa byte
+    set mask-bytes[2] = {bit-srl mask, 8} asa byte
+    set mask-bytes[3] = {bit-and mask, 0xFF} asa byte
+    def bytes-end = {min bytes.size, start + length}
+    {for i:int = start below bytes-end do
+        set bytes[i] =
+            {bit-xor bytes[i], mask-bytes[{bit-and 0x3, i - start}]} asa byte
+    }
+  }
+
+  {method protected {next-mask}:uint32
+    || If masking should be optional, this can just return 0 to disable masking.
+    || This random function will re-seed, which should help get more entropy,
+    || but this is still just a time based seed, which is not cryptographic
+    || quality entropy.  In future this should used something based on
+    || /dev/random or CryptGenRandom() where the OS promised better entropy.
+    || But note that those can be very slow, and using them for every message
+    || might be very slow.
+    {while true do
+        def r = {{Random}.next-int32}
+        {if r != 0 then {return r asa uint32}}
+        {sleep 0s} || Yield to let a very short amount of time go by.
+    }
+  }
+
+  {method protected {check-if-open-to-send}:void
+    {if self.ready-state != WebSocketReadyState.OPEN then
+        {throw
+            {WebSocketInvalidStateError
+                "WebSocket is not open, so can not send."
+            }
+        }
+    }
+  }
+
+  {doc-next
+    {purpose
+        Send a WebSocket protocol message of type {ctext TEXT} with the
+        {docref String} {param data}.
+    }
+    {parameter data,
+        Data to send, will be encoded as UTF8.
+    }
+    {notes
+        Current version of {docref WebSocket} will not try to fragment the data.
+    }
+  }
+  || TODO: add support for fragmenting.
+  {method public {send-String
+                     data:String || DOMString
+                 }:void
+    {self.check-if-open-to-send}
+    def data-bytes = {to-bytes data}
+    {self.low-send-ByteArray WebSocketOpCode.TEXT.value asa int, data-bytes}
+  }
+
+  || head-append? = true means jump message to the head of the queue.
+  {method protected {low-send-ByteArray
+                     opcode:int,
+                     data:#ByteArray,
+                     length:int = {if-non-null data then data.size else 0},
+                     head-append?:bool = false
+                 }:void
+    {self.check-if-open-to-send}
+    def data-size =
+        {if-non-null data then
+            data.size
+         else
+            0
+        }
+    {if length > data-size then
+        || FIXME: better Exception type.
+        {error "length of data to send larger than provided data."}
+    }
+    def bytes = {ByteArray}
+    def mask = {self.next-mask}
+    {self.append-header
+        bytes, opcode, length asa uint64, fin? = true, mask = mask}
+    def start = bytes.size
+    {if-non-null data then
+        {bytes.concat data}
+    }
+    {bytes.set-size start + length, 0}
+    {self.apply-mask bytes, mask, start = start}
+
+    {self.append-bytes-for-write bytes, head-append? = head-append?}
+
+  }
+
+  {doc-next
+    {purpose
+        Send a WebSocket protocol message of type {ctext BINARY} with the
+        {docref ByteArray} {param data}.
+    }
+    {notes
+        Current version of {docref WebSocket} will not try to fragment the data.
+    }
+    {parameter data,
+        Data to send.
+    }
+  }
+  || TODO: add support for fragmenting.
+  {method public {send-ByteArray
+                     data:ByteArray
+                 }:void
+    {self.low-send-ByteArray WebSocketOpCode.BINARY.value asa int, data}
+  }
+
+  {doc-next
+    {purpose
+        Send a WebSocket protocol message of type {ctext PONG} with the
+        {docref ByteArray} {param data}.
+    }
+    {notes
+        Current version of {docref WebSocket} will not try to fragment the data.
+    }
+    {parameter data,
+        Data to send.
+    }
+    {parameter length,
+        Amount of data to send, may not be larger than {ctext data.size}.
+    }
+  }
+  {method protected {send-pong
+                       data:ByteArray,
+                       start:int = 0,
+                       length:int = data.size
+                    }:void
+    def bytes = {data.clone-range start, length}
+    {self.low-send-ByteArray
+        WebSocketOpCode.PONG.value asa int, bytes, length = length
+    }
+  }
+
+  {doc-next
+    {purpose
+        Send a WebSocket protocol message of type {ctext PING} with the
+        {docref ByteArray} {param data} or {docref String} {param string}.
+    }
+    {details
+        It is expected that the server end point will response with a
+        {ctext PONG} type message echoing back the data that was sent.
+        A {docref EventHandler} for {docref WebSocketPongEvent} can
+        be provided that will be called for any {ctext PONG} messages that
+        are recevied.
+    }
+    {notes
+        Current version of {docref WebSocket} will not try to fragment the data.
+    }
+    {parameter data,
+        Data to send, if not {ctext null} {param string} will not be sent.
+    }
+    {parameter string,
+        Data to send, if {param data} is {ctext null}.
+    }
+  }
+  {method public {send-ping data:#ByteArray = null, string:#String = null}:void
+    def bytes =
+        {if-non-null data then
+            data
+         else
+            {if-non-null string then
+                {to-bytes string}
+             else
+                null
+            }
+        }
+    {self.low-send-ByteArray WebSocketOpCode.PING.value asa int, bytes}
+  }
+
+  {doc-next
+    {purpose
+        Start closing the connection for this {docref WebSocket}.
+    }
+    {details
+        Closing cleanly requires getting an answer from the other side,
+        so this {docref WebSocket} will go into {docref WebSocket.ready-state}
+        {ctext ==} {docref WebSocketReadyState}{ctext .CLOSING} when this
+        method is called, but will not be completely closed until
+        a message is recevied from the other side.  At that point
+        {docref WebSocket.ready-state} {ctext ==}
+        {docref WebSocketReadyState}{ctext .CLOSED} and a
+        {docref WebSocketCloseEvent} will be queued up.  Data sent with
+        the close message will normally be echoed back by the server endpoint.
+    }
+    {notes
+        If this is called before this {docref WebSocket} is open, it will
+        cause an unclean close, which will not send a message to the server
+        endpoint.
+    }
+    {parameter status-code,
+        A status code about why it is closing, possibley one of the values from
+        {docref WebSocketCloseStatus}.
+    }
+    {parameter status-data,
+        Data to send, if not {ctext null} {param status-string} will not be sent.
+    }
+    {parameter status-string,
+        Data to send, if {param status-data} is {ctext null}.
+    }
+  }
+  || try to close the connection, or start the close negotiation.
+  || status-string and status-data will be copied if needed.
+  {method public {close
+                     status-code:int16 = WebSocketCloseStatus.normal.value,
+                     status-string:#String = null,
+                     status-data:#ByteArray = null
+                 }:void
+    {if self.ready-state == WebSocketReadyState.OPEN then
+        def data =
+            {if-non-null status-data then
+                {status-data.clone}
+             else
+                {if-non-null status-string then
+                    {to-bytes status-string}
+                 else
+                    null
+                }
+            }
+        {data.insert {bit-srl status-code, 8} asa byte, 0}
+        {data.insert {bit-and status-code, 0xFF} asa byte, 1}
+
+        {self.low-send-ByteArray WebSocketOpCode.CLOSE.value asa int, data,
+            head-append? = true}
+        set self.enqueued-close? = true
+        set self.ready-state = WebSocketReadyState.CLOSING
+    }
+    {if self.ready-state == WebSocketReadyState.CONNECTING or
+        (self.received-close? and self.sent-close? and
+         self.ready-state != WebSocketReadyState.CLOSED)
+     then
+        {self.socket-close}
+        set self.ready-state = WebSocketReadyState.CLOSED
+        || Note that we won't fill in the reason if it is a string provided
+        || by the caller.
+        {self.enqueue-event
+            {WebSocketCloseEvent
+                code = status-code,
+                reason = status-data,
+                clean? = (self.received-close? and self.sent-close?)
+            }
+        }
+    }
+  }
+
+  {method protected {parse-url
+                        url:Url
+                    }:(path:String, hostname:String, port:uint16)
     
     let name:String = url.name
     let hostname:#String, port:#String, path:#String
@@ -157,266 +687,647 @@
     {return {non-null path}, {non-null hostname}, {port.to-int} asa uint16}
   }
 
-|# might be old
-  {method private {generate-sec-websocket-key}:(uint32, String)
-
-    def random = {Random}
-    def spaces = {random.next-in-range 1, 12} asa uint32
-    def max = (max-uint32 div spaces) asa uint32
-    def dummy = (max div 2 asa uint32) asa int32
-    def number = ({random.next-in-range -dummy, dummy} + dummy) asa uint32
-    def product = number * spaces
-    let key:String = product & ""
-    {for i = 0 below spaces do
-        def pos = {random.next-in-range 1, key.size - 1}
-        set key = {key.substr 0, pos} & " " & {key.substr pos, key.size - pos}
-    }
-    def available-chars = {{Array-of int}}
-    {for i = 0x21 below 0x2f + 1 do
-        {available-chars.append i}
-    }
-    {for i = 0x3a below 0x7e + 1 do
-        {available-chars.append i}
-    }
-    def n = {random.next-in-range 1, 12}
-    {for i = 0 below n do
-        def idx = {random.next-in-range 0, available-chars.size - 1}
-        def ch = available-chars[idx] asa char
-        def pos = {random.next-in-range 0, key.size}
-        set key = {key.substr 0, pos} & ch & {key.substr pos, key.size - pos}
-    }
-    {return number, key}
-  }
-#|
-
-  {method private {generate-sec-websocket-key}:String
+  {method protected {generate-sec-websocket-key}:String
     def random = {Random}
     def bytes = {ByteArray.from-size 16, 0}
     {for i = 0 below 16 do
-        set bytes[i] = {random.next-in-range 0, 255} asa byte
+        set bytes[i] = {random.next-uint8}
     }
     {return {base64-encode bytes}}
   }
 
-
-  {method private {generate-key3}:ByteArray
-    def random = {Random}
-    def bytes = {ByteArray.from-size 8, 0}
-    {for i = 0 below 8 do
-        set bytes[i] = {random.next-in-range 0, 255} asa byte
+  {method protected {generate-sec-websocket-key-response key:String}:String
+    def digester = {SHA-1-Digester}
+    {digester.start}
+    {for c in key do
+        {digester.add-char c}
     }
-    {return bytes}
+    || magic string from RFC
+    {for c in "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" do
+        {digester.add-char c}
+    }
+    def digest = {digester.finish}
+    def digest-bytes = {ByteArray efficient-size = 28}
+    || Equivilent to {ByteArray.from-FastArray digest.value} but 7.0
+    || didn't have MsgDigest.value
+    {for i in digest do
+        {for bi = 3 downto 0 do
+            {digest-bytes.append {bit-srl i, bi * 8} asa byte}
+        }
+    }
+    {return {base64-encode digest-bytes}}
   }
 
-  {method private {handshake
+  {define-proc protected {protocol-match?
+                             requested-protocols:#String,
+                             response-protocol:#String
+                         }:bool
+    {if-non-null requested-protocols then
+        {if requested-protocols.empty? then
+            {return true}
+        }
+        {if response-protocol == null or response-protocol.empty? then
+            {return false}
+        }
+        || header looks like "Sec-WebSocket-Protocol: chat, no-chat"
+        def rps = {requested-protocols.split split-chars = ", " asa CharClass}
+        {for check in rps do
+            || This might get empty strings, but we already checked
+            || for response-protocol being empty so this is safe.
+            {if {check.equal? {non-null response-protocol}} then
+                {return true}
+            }
+        }
+        {return false}
+    }
+    {return true}
+  }
+
+  || returns first byte after end of HTTP headers which might be after end
+  || end of bytes, or -1 if not found.
+  {define-proc protected {find-end-of-headers bytes:ByteArray}:int
+    {for b key i in bytes do
+        {if b == '\r' asa byte and i + 3 < bytes.size and
+            bytes[i + 1] == '\n' and 
+            bytes[i + 2] == '\r' and
+            bytes[i + 3] == '\n'
+         then
+            {return i + 4}
+         elseif b == '\n' asa byte and i + 1 < bytes.size and
+            bytes[i + 1] == '\n'
+         then
+            {return i + 2}
+        }
+    }
+    {return -1}
+  }
+
+  {method protected {send-handshake
                       path:String, 
                       hostname:String, 
                       port:uint16,
-                      protocol:#String
+                      protocol:#String,
+                      extensions:#String,
+                      request-headers:#HttpRequestHeaders = null,
+                      include-http-cookies?:bool = false
                   }:void
 
-    {with-open-streams out = {self.socket.to-OutputStream} do
-        def host = 
-            {if port != 80 then 
-                {format "%s:%d", hostname, port} 
+    set self.requested-protocols = protocol
+    set self.requested-extensions = extensions
+    def host = 
+        {if port != 80 then 
+            {format "%s:%d", hostname, port} 
+         else
+            {format "%s", hostname}
+        }
+
+    def origin = "http://" & host
+
+    {try
+        set self.http-url = {abs-url "http://" & host & path}
+        def cookies =
+            {if include-http-cookies? then
+                def cookies = {get-http-cookies {non-null self.http-url}}
+                {if-non-null cookies then
+                    def buf = {StringBuf}
+                    {for c key i in cookies do
+                        {if i == 0 then
+                            {buf.concat "Cookie: "}
+                        else
+                            {buf.concat "; "}
+                        }
+                        {format out = buf, "%s=%s", c.name, c.value}
+                    }
+                    {if buf.size > 0 then
+                        {buf.concat "\r\n"}
+                    }
+                    {buf.to-String}
+                 else
+                    ""
+                }
              else
-                {format "%s", hostname}
+                ""
             }
-
-        def origin = "http://" & host
-
+        def headers =
+            {if-non-null request-headers then
+                def buf = {StringBuf}
+                {for v key k in request-headers do
+                    || Are there other headers that should be suppresed?
+                    {if not {k.equal? "Host", ignore-case? = true} then
+                        {format out = buf, "%s: %s\r\n", k, v}
+                    }
+                }
+                {buf.to-String}
+             else
+                ""
+            }
         || The handshake from the client looks as follows:
         ||   GET /demo HTTP/1.1
-        ||   Upgrade: WebSocket
-        ||   Connection: Upgrade
         ||   Host: example.com
+        ||   Upgrade: websocket
+        ||   Connection: Upgrade
+        ||   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
         ||   Origin: http://example.com
-        ||   WebSocket-Protocol: sample
-        def key = {self.generate-sec-websocket-key}
-        {out.write
+        ||   Sec-WebSocket-Protocol: sample
+        ||   Sec-WebSocket-Version: 13
+        set self.handshake-key = {self.generate-sec-websocket-key}
+        {self.append-bytes-for-write
             {to-bytes
                 {format
                     "GET %s HTTP/1.1\r\n" &
                     "Host: %s\r\n" &
-                    "Connection: Upgrade\r\n" &
                     "Upgrade: websocket\r\n" &
+                    "Connection: Upgrade\r\n" &
                     "Sec-WebSocket-Key: %s\r\n" &
-                    "Sec-WebSocket-Version: 13\r\n" &
                     "Origin: %s\r\n" &
-                    "\r\n",
-                    path, host, key, origin
-                }
-            }
-        }
-        || key3
-|| FIXME: Doesn't work on Tomcat 7 or version 13.
-        def key3 = {self.generate-key3}
-        {out.write key3}
-        {out.flush}
-
-        || The handshake from the server looks as follows:
-        ||   HTTP/1.1 101 Web Socket Protocol Handshake
-        ||   Upgrade: WebSocket
-        ||   Connection: Upgrade
-        ||   WebSocket-Origin: http://example.com
-        ||   WebSocket-Location: ws://example.com/demo
-        ||   WebSocket-Protocol: sample
-        {with-open-streams in = {self.socket.to-InputStream} do
-            def buf = {StringBuf}
-            {while true do
-                def b = {in.read-one} || NOTE: eof? is always false
-                {if b == '\r' then
-                    {if {in.read-one} == '\n' then
-                        {if buf.size == 0 then
-                            {break}
-                        }
-                        let m:Matcher = 
-                            {Matcher 
-                                |"(?P<key>.*):(?P<value>.*)"|,
-                                backwards? = true
-                            }
-                        def line = {buf.to-String}
-                        {if-non-null state = {m.match line} 
-                         then
-                            def (key, value) = (state["key"], state["value"])
-                            {dump key, value}
-                         else
-                            set m = {Matcher "[^ ]* ([^ ]*) .*"}
-                            {if-non-null state = {m.match line} then
-                                def code = state[1]
-                                {if code != "101" then
-                                    {throw {Exception {format "unexpected code in: %s", code}}}
-                                }
-                            }
-                        }
-                        {buf.clear}
+                    {if protocol != null then
+                        "Sec-WebSocket-Protocol: %s\r\n"
                      else
-                        {throw {Exception "expected LF after line."}}
-                    }
-                 else
-                    {buf.append b asa char}
+                        "%s"
+                    } &
+                    {if extensions != null then
+                        "Sec-WebSocket-Extensions: %s\r\n"
+                     else
+                        "%s"
+                    } &
+                    "Sec-WebSocket-Version: 13\r\n" &
+                    "%s" &
+                    "%s" &
+                    "\r\n",
+                    path, host, self.handshake-key, origin,
+                    {if-non-null protocol then protocol else ""},
+                    {if-non-null extensions then extensions else ""},
+                    cookies,
+                    headers
                 }
-            }
-
-|#
-            || response created on server
-            def response = {ByteVec max-size = 16}
-            {for i = 0 below 16 do
-                 {response.append {in.read-one}}
-            }
-
-            || response created on client
-            def challenge = {ByteArray}
-            {challenge.concat 
-                {ByteArray.from-FastArray 
-                    {hex-decode {format "%.8x", num1}}
-                }
-            }
-            {challenge.concat 
-                {ByteArray.from-FastArray 
-                    {hex-decode {format "%.8x", num2}}
-                }
-            }
-            {challenge.concat key3}
-
-            def md = {MD5-Digester} || FIXME: maybe SHA-1 since v13
-            {md.start}
-            {for c in challenge do
-                {md.add-byte c}
-            }
-
-            def expected-response = {format "%s", {md.finish}}
-            def actual-response = {hex-encode response}
-            {dump expected-response, actual-response}
-#|
-           
-|| FIXME: not work on v13
-||            {if not {actual-response.equal? 
-||                        expected-response, ignore-case? = true} 
-||             then
-||                {dump expected-response, actual-response}
-||                {error "The key3 is wrong response."} || TODO
-||            }
-        }
-    }
-  }
-
-  {constructor public {default
-                          url:Url, || ws:// or wss://
-                          protocol:#String = null,
-                          ...:EventHandler
-                      }
-
-    set self.ready-state = ReadyState.CONNECTING
-    set self.URL = url
-    def (path, hostname, port) = {self.parse-url url}
-    set self.socket =
-        {DataTCPSocket remote-port = port, remote-name = hostname}
-    {try 
-        {self.socket.connect}
-        {self.handshake path, hostname, port, protocol}
-
-        {construct-super ...}
-
-        || for EventMessage
-        def async-receive-proc = 
-            {proc {}:void
-                {if-non-null receive-stream = self.receive-stream then
-                    {if receive-stream.open? then
-                        ||{receive-stream.close} || FIXME: error?
-                    }
-                 else
-                    set self.receive-stream = {self.socket.to-InputStream}
-                }
-
-                {self.receive-stream.async-read
-                    partial? = true,
-                    {on e:AsyncStreamReadEvent do
-
-                        {if-non-null ex = e.exception then
-                            {dump ex} ||TODO
-                         elseif e.canceled? then
-                            {dump e.canceled?} ||TODO
-                         else
-                            def bytes = e.data asa ByteArray
-|| FIXME: Doesn't work on Tomcat 7 or version 13.
-                            ||{if bytes[0] == 0x00 and 
-                            ||    bytes[bytes.size - 1] == 0xff 
-                            || then
-                            ||    {bytes.remove 0}
-                            ||    {bytes.remove bytes.size - 1}
-                            ||    {self.handle-event {MessageEvent bytes}}
-                            ||}
-                            {self.handle-event {MessageEvent bytes}}
-                        }
-                        {async-receive-proc}
-                    }
-                }
-            }
-        {async-receive-proc}
-
-        set self.ready-state = ReadyState.OPEN
-        {self.handle-event {OpenEvent}}
-
-        {register-exit-proc 
-            {proc {}:void
-                {output "closed before exiting."}
-                {self.socket.close}
             }
         }
      catch e:Exception do
-        set self.ready-state = ReadyState.CLOSED
-        {throw e}
+        {self.maybe-handle-handshake-failure}
+        {self.enqueue-event {WebSocketErrorEvent e.message}}
+        {return}
     }
   }
+
+  {method protected {handle-handshake-response-bytes}:bool
+    || The handshake from the server looks as follows:
+    ||   HTTP/1.1 101 Web Socket Protocol Handshake
+    ||   Upgrade: websocket
+    ||   Connection: Upgrade
+    ||   WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+    ||   WebSocket-Protocol: sample
+    def end-of-headers = {WebSocket.find-end-of-headers self.read-bytes}
+    {if end-of-headers >= 0 then
+        {try
+            def buf = {StringBuf}
+            def (bytes-decoded, str) =
+                {decode-characters
+                    self.read-bytes.underlying-FastArray,
+                    CharEncoding.iso-latin-1,
+                    in-end = end-of-headers
+                }
+            def response-headers =
+                {HttpResponseHeaders str, -1, -1, {non-null self.http-url}}
+            {self.read-bytes.remove 0, length = end-of-headers}
+
+            {if-non-null response-headers then
+                {if response-headers.status != 101 then
+                    || FIXME: fail it properly!
+                    {error "Response status was not the required 101."}
+                }
+                def (upgrade, upgrade-exists?) =
+                    {response-headers.get-if-exists "Upgrade"}
+                {if not upgrade-exists? or
+                    not {upgrade.equal? "websocket", ignore-case? = true}
+                 then
+                    || FIXME: fail it properly!
+                    {error "Invalid Upgrade header."}
+                }
+                def (connection, connection-exists?) =
+                    {response-headers.get-if-exists "Connection"}
+                {if not connection-exists? or
+                    not {connection.equal? "Upgrade", ignore-case? = true}
+                 then
+                    || FIXME: fail it properly!
+                    {error "Invalid Connection header."}
+                }
+                def (actual-response, has-accept-header?) =
+                    {response-headers.get-if-exists "Sec-WebSocket-Accept"}
+                || Check key in Sec-WebSocket-Accept as 
+                {if not has-accept-header? or
+                    not {actual-response.equal?
+                            {self.generate-sec-websocket-key-response
+                                {non-null self.handshake-key}
+                            }
+                        }
+                 then
+                    || FIXME: fail it properly!
+                    {error "The accept response is wrong."}
+                }
+                || Then save extensions
+                set self.protocol =
+                    {response-headers.get-if-exists "Sec-WebSocket-Extensions"}
+                || Then save protocol
+                set self.protocol =
+                    {response-headers.get-if-exists "Sec-WebSocket-Protocol"}
+                {if not {WebSocket.protocol-match? self.requested-protocols,
+                            self.protocol}
+                 then
+                    || FIXME: fail it properly!
+                    {error "No protocol match found"}
+                }
+             else
+                || FIXME: fail it properly!
+                {error "Invalid response"}
+            }
+
+         catch e:Exception do
+            {self.maybe-handle-handshake-failure}
+            {self.enqueue-event {WebSocketErrorEvent e.message}}
+            {return false}
+        }
+        {self.handle-handshake-success}
+        {return true}
+    }
+    {return false}
+  }
+
+  || returns true if could make more progress when called again
+  {method protected {handle-bytes}:bool
+    {if self.ready-state == WebSocketReadyState.CONNECTING then
+        {return {self.handle-handshake-response-bytes}}
+    }
+    let (data-length-uint64:uint64, complete?:bool, opcode:int, fin?:bool,
+            mask:uint32, header-length:int) =
+        {self.decode-header self.read-bytes}
+    || need to wait to read the rest of the header.
+    {if not complete? then 
+        {return false}
+    }
+    {if data-length-uint64 > max-int then
+        {error "data length is too big" & data-length-uint64}
+    }
+    let data-length:int = data-length-uint64 asa int
+    let total-length:int = header-length + data-length
+    || Need to wait to read the rest of the whole message.
+    {if total-length > self.read-bytes.size then
+        {return false}
+    }
+    || We have the whole message, decode it.
+    {self.apply-mask self.read-bytes, mask, start = header-length,
+        length = data-length}
+
+    || If the start of a fragmented message
+    {if self.fragmented-message != null and opcode <= 7 then
+        {self.enqueue-event
+            {WebSocketErrorEvent "Non-control message in the middle of a " &
+                "fragmented message, discarding partial message."}
+        }
+        set self.fragmented-message = null
+    }
+    {if not fin? and (opcode == WebSocketOpCode.TEXT.value asa int or
+        opcode == WebSocketOpCode.BINARY.value asa int)
+     then
+        set self.fragmented-opcode = opcode
+        set self.fragmented-message =
+            {self.read-bytes.clone-range header-length, data-length}
+        {self.read-bytes.remove 0, length = total-length}
+        {return self.read-bytes.size > 0}
+    }
+    {if opcode == WebSocketOpCode.CONTINUATION.value asa int then
+        {if-non-null fm = self.fragmented-message then
+            || Remove header, so we can manipulate just the data
+            {self.read-bytes.remove 0, length = header-length}
+            || If a middle message, just save it.
+            {if not fin? then
+                def new-size = fm.size + data-length
+                {fm.concat self.read-bytes}
+                {fm.set-size new-size, 0}
+                {self.read-bytes.remove 0, length = data-length}
+                {return self.read-bytes.size > 0}
+            }
+            {dec total-length, header-length}
+            set header-length = 0
+            || slight hack to just moved defragmented data back in.
+            {self.read-bytes.splice fm, 0}
+            set opcode = self.fragmented-opcode
+            {inc data-length, fm.size}
+            set self.fragmented-message = null
+         else
+            {self.enqueue-event
+                {WebSocketErrorEvent "Fragment for unknown message."}
+            }
+        }
+    }
+    {if opcode == WebSocketOpCode.BINARY.value asa int then
+        || TODO: Should we require that handler be done with bytes
+        || by the time they return, so we don't need to make a copy?
+        def bytes = {self.read-bytes.clone-range header-length, data-length}
+        {self.enqueue-event {WebSocketMessageEvent data-bytes = bytes}}
+     elseif opcode == WebSocketOpCode.TEXT.value asa int then
+        def (bytes-decoded, str) =
+            {decode-characters
+                self.read-bytes.underlying-FastArray,
+                CharEncoding.utf8,
+                in-start = header-length,
+                in-end = total-length
+            }
+        {self.enqueue-event {WebSocketMessageEvent data-string = str}}
+     elseif opcode == WebSocketOpCode.PING.value asa int then
+        {self.send-pong self.read-bytes, start = header-length,
+            length = data-length}
+     elseif opcode == WebSocketOpCode.CLOSE.value asa int then
+        set self.received-close? = true
+        let code:int16 = WebSocketCloseStatus.normal.value asa int16
+        let reason:#ByteArray = null
+        {if data-length >= 2 then
+            def b0 = self.read-bytes[header-length] asa int16
+            def b1 = self.read-bytes[header-length + 1] asa int16
+            set code = ({bit-sll b0, 8} + b1) asa int16
+            {if data-length > 2 then
+                set reason = 
+                    {self.read-bytes.clone-range header-length + 2,
+                        data-length - 2}
+            }
+        }
+        {self.close status-code = code, status-data = reason}
+     elseif opcode == WebSocketOpCode.PONG.value asa int then
+        def bytes = {self.read-bytes.clone-range header-length, data-length}
+        {self.enqueue-event {WebSocketPongEvent data-bytes = bytes}}
+     else
+        || Ignoring message.
+        || FIXME: should we pass types 3-7 reserved non-control types
+        || through to WebSocketMessageEvent?
+        || FIXME: should we just ignore control types 0xB-0xF?
+        || through to WebSocketMessageEvent?
+    }
+    {self.read-bytes.remove 0, length = total-length}
+    {return self.read-bytes.size > 0}
+  }
+
+  {doc-next
+    {purpose
+        Construct a {docref WebSocket} and start connecting to a server endpoint.
+    }
+    {details
+        Note that this will make a {docref DataTCPSocket} and connect to
+        a server if {param input-stream} and {param output-stream} are
+        {ctext null}, and this may fail if disallowed by the standard
+        applet security rules.
+    }
+    {parameter url,
+        {purpose
+            The {docref Url} for the WebSocket protocol endpoint that this
+            {docref WebSocket} is contacting.
+        }
+        {details
+            Will start with {ctext "ws://"}.
+        }
+    }
+    {parameter protocol,
+        {purpose
+            The protocols {docref String} that will be sent in the handshake to
+            the server endpoint, or {ctext null} to send no protocol.
+        }
+        {details
+            The protocol response in the handshake will be checked against this.
+        }
+    }
+    {parameter extensions,
+        {purpose
+            The extensions {docref String} that will be sent in the handshake to
+            the server endpoint, or {ctext null} to send no extensions.
+        }
+        {details
+            The extensions response in the handshake will not be checked.
+        }
+    }
+    {parameter request-headers,
+        {purpose
+            Any extra HTTP headers to include in the initial handshake.
+        }
+    }
+    {parameter include-http-cookies?,
+        {purpose
+            Should HTTP cookies for a URL made from {param url} with
+            {ctext http:} or {ctext https:} as the scheme be included in the
+            handshake request.
+        }
+        {details
+            Defaults to {ctext false}.
+        }
+    }
+    {parameter input-stream,
+        {purpose
+            A {docref ByteInputStream} to use instead of making a socket
+            and using streams for that socket.
+        }
+        {details
+            {param input-stream} and {param output-steam} must either both
+            be {ctext null} or both not be {ctext null}.
+        }
+    }
+    {parameter output-stream,
+        {purpose
+            A {docref ByteOutputStream} to use instead of making a socket
+            and using streams for that socket.
+        }
+        {details
+            {param input-stream} and {param output-steam} must either both
+            be {ctext null} or both not be {ctext null}.
+        }
+    }
+    {parameter ...,
+        {purpose
+            {docref EventHandler}s that will get various events that are
+            subclasses of {docref WebSocketEvent} as {docref WebSocket} does
+            various things.
+        }
+    }
+  }
+  || FIXME: should get origin from applet, not from url,
+  || but socket code will its own security checks too.
+  {constructor public {default
+                          url:Url, || ws:// or wss://
+                          protocol:#String = null,
+                          extensions:#String = null,
+                          request-headers:#HttpRequestHeaders = null,
+                          include-http-cookies?:bool = false,
+                          || must be both input-stream and output-stream or
+                          || neither.
+                          input-stream:#ByteInputStream = null,
+                          output-stream:#ByteOutputStream = null,
+                          ...:EventHandler
+                      }
+
+    set self.ready-state = WebSocketReadyState.CONNECTING
+    set self.read-bytes = {ByteArray}
+    set self.url = url
+    set self.write-queue = {new {Dequeue-of ByteArray}}
+    def (path, hostname, port) = {self.parse-url url}
+    {construct-super ...}
+    {if (input-stream != null) != (output-stream != null) then
+        || FIXME: what type of error should we use.
+        {error "input-stream and output-stream must both be null or both be non-null."}
+    }
+    {register-exit-proc 
+        {proc {}:void
+            {self.socket-close}
+        }
+    }
+    {if input-stream != null then
+        set self.input-stream = input-stream
+        set self.output-stream = output-stream
+        {self.send-handshake path, hostname, port, protocol, extensions,
+            request-headers = request-headers,
+            include-http-cookies? = include-http-cookies?
+        }
+        {self.async-receive-proc}
+    else
+        set self.socket =
+            {DataTCPSocket remote-port = port, remote-name = hostname}
+        {self.socket.async-connect
+            {on e:AsyncConnectSocketEvent do
+                let error-event:#WebSocketErrorEvent
+                {if-non-null ex = e.exception then
+                    set error-event = {WebSocketErrorEvent ex.message}
+                 elseif e.timed-out? then
+                    set error-event = {WebSocketErrorEvent "Connect timed out."}
+                }
+                {if-non-null error-event then
+                    {self.enqueue-event error-event}
+                    {self.maybe-handle-handshake-failure}
+                    {return}
+                }
+                {if e.canceled? then {return}}
+                set self.input-stream = {self.socket.to-InputStream}
+                set self.output-stream = {self.socket.to-OutputStream}
+
+                {self.send-handshake path, hostname, port, protocol, extensions,
+                    request-headers = request-headers,
+                    include-http-cookies? = include-http-cookies?
+                }
+                {self.async-receive-proc}
+            }
+        }
+    }
+  }
+
+  {method protected {handle-handshake-success}:void
+    set self.ready-state = WebSocketReadyState.OPEN
+    {self.enqueue-event {WebSocketOpenEvent}}
+  }
+
+  {method protected {maybe-handle-handshake-failure}:void
+    {if self.ready-state != WebSocketReadyState.OPEN then
+        {self.close status-code = WebSocketCloseStatus.close-abnormal.value}
+    }
+  }
+
+  {method protected {async-receive-proc}:void
+    def async-reader =
+        {self.input-stream.async-read
+            out = self.read-bytes,
+            partial? = true,
+            append? = true,
+            {on e:AsyncStreamReadEvent do
+                {if-non-null ex = e.exception then
+                    {self.enqueue-event {WebSocketErrorEvent ex.message}}
+                    {self.close status-code = WebSocketCloseStatus.close-abnormal.value}
+                    {return}
+                 else
+                    {while {self.handle-bytes} do }
+                }
+                {if self.ready-state != WebSocketReadyState.CLOSED then
+                    {self.async-receive-proc}
+                }
+            }
+        }
+  }
+
+  {method protected {socket-close}:void
+    {if-non-null i = self.input-stream then
+        {i.close}
+        set self.input-stream = null
+    }
+    {if-non-null o = self.output-stream then
+        {o.close}
+        set self.output-stream = null
+    }
+    {if-non-null s = self.socket then
+        {s.close}
+        set self.socket = null
+    }
+    set self.ready-state = WebSocketReadyState.CLOSED
+  }
+
+  || appends bytes to queue to be written to socket, and starts async-writing
+  || if needed.
+  || Takes ownership of bytes, do not re-use object in caller.
+  || Caller should have already checked state.
+  || head-append? argument means requests should jump to
+  || the front of the line.  Like if close or ping should jump ahead.
+  {method protected {append-bytes-for-write
+                      bytes:ByteArray,
+                      head-append?:bool = false
+                  }:void
+    || Notes: some parts of the API spec seem to say that self.buffered-amount
+    || is supposed to be the number of application bytes, not the fully
+    || packaged bytes, but that seems wrong to me, so we are doing it as the
+    || full application byte count.
+    {inc self.buffered-amount, bytes.size}
+    {if head-append? then
+        {self.write-queue.head-add bytes}
+     else
+        {self.write-queue.tail-add bytes}
+    }
+
+    {self.async-write-proc}
+  }
+
+  || Must have at least one array in self.write-queue
+  {method protected {async-write-proc}:void
+    {if self.async-write-pending? then {return}}
+    set self.async-write-pending? = true
+    {self.output-stream.async-write
+        {self.write-queue.head-remove},
+        || Note: if we wanted to keep self.buffered-amount more up to date,
+        || we could get partial events and look at them.
+        partial? = false,
+        {on e:AsyncStreamWriteEvent do
+            set self.async-write-pending? = false
+            {if-non-null ex = e.exception then
+                {self.enqueue-event {WebSocketErrorEvent ex.message}}
+                || We got an error, need to close up.
+                {self.close status-code = WebSocketCloseStatus.close-abnormal.value}
+                {return}
+            }
+            || If we sent something, and had a close, we sent the close.
+            {if self.enqueued-close? then
+                set self.sent-close? = true
+            }
+            {dec self.buffered-amount, e.data-written}
+            {if self.write-queue.size > 0 then
+                {self.async-write-proc}
+            }
+        }
+    }
+  }
+
 }
 
 || INVALID_STATE_ERR
-||{define-class public InvalidStateErr
-||  {inherits Exception}
-||
-||  {constructor package {default message}
-||    {construct-super message}
-||  }
-||}
+{doc-next
+    {purpose
+        {docref Exception} used when one of the send methods on
+        {docref WebSocket} is called when the {docref WebSocket} is in the
+        wrong state for sending.
+    }
+}
+{define-class public WebSocketInvalidStateError
+  {inherits Exception}
 
+  {constructor package {default message:String}
+    {construct-super message}
+  }
+}

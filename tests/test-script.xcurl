@@ -1,0 +1,104 @@
+||| Copyright (C) SCSK Corp. All Rights Reserved.
+
+||| Licensed under the Apache License, Version 2.0 (the "License");
+||| you may not use this file except in compliance with the License.
+||| You may obtain a copy of the License at
+||| 
+|||     http://www.apache.org/licenses/LICENSE-2.0
+||| 
+||| Unless required by applicable law or agreed to in writing, software
+||| distributed under the License is distributed on an "AS IS" BASIS,
+||| WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+||| See the License for the specific language governing permissions and
+||| limitations under the License.
+
+|||
+||| @author
+|||
+
+{curl 7.0, 8.0 script}
+{script manifest = "manifest.mcurl"}
+
+{import * from COM.CURL.WEBSOCKET}
+
+{define-proc {bytes-to-string bytes:ByteArray}:String
+    def buf = {StringBuf}
+    {for b in bytes do
+        {buf.append b asa char}
+    }
+    {return {buf.to-String}}
+}
+
+{define-proc {run}:void
+    def ws =
+        {WebSocket
+            || Tomcat 7
+            ||{url "ws://localhost:8080/websock/wsServer"},
+            || node.js
+||            {url "ws://localhost:10080/"},
+||            {url "ws://www.google.com/"},
+            {url "ws://echo.websocket.org/"},
+            {on e:WebSocketMessageEvent do
+                {if-non-null db = e.data-bytes then
+                    {output {bytes-to-string db}}
+                 else
+                    {output e.data-string}
+                }
+            },
+            {on e:WebSocketOpenEvent do
+                {output "Got open event."}
+                {dump ws.buffered-amount, ws.ready-state}
+            },
+            {on e:WebSocketCloseEvent do
+                {output "Got close event."}
+                {dump e.clean?, e.code, e.reason}
+                {dump ws.buffered-amount, ws.ready-state}
+                {if-non-null d = e.reason then
+                    {output d[0] asa char, d[1] asa char, d[2] asa char}
+                }
+                {exit 0}
+            },
+            {on e:WebSocketPongEvent do
+                {dump "Pong", e.data-bytes}
+                {if-non-null d = e.data-bytes then
+                    {output d[0] asa char, d[1] asa char, d[2] asa char}
+                }
+            }
+        }
+    {dump ws.buffered-amount, ws.ready-state}
+    {while ws.ready-state != WebSocketReadyState.CLOSED and
+        ws.ready-state != WebSocketReadyState.OPEN do
+        {dispatch-events true}
+    }
+    {dump ws.buffered-amount, ws.ready-state}
+    {if ws.ready-state == WebSocketReadyState.OPEN then
+
+        {ws.send-String "Hello"}
+        {dump ws.buffered-amount, ws.ready-state}
+        {ws.send-String "test test test test test 100 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        {ws.send-String {String.repeat-char 'b', 10241}}
+        {dump ws.buffered-amount, ws.ready-state}
+        {ws.send-String "Hello2"}
+        {ws.send-ping data= {ByteArray 'a' asa byte, 'b' asa byte, 'c' asa byte}}
+        {ws.send-String "Hello3"}
+        {after 1s do
+            {dump ws.buffered-amount}
+            {ws.send-ping string = "abc"}
+            {dump ws.buffered-amount}
+            {ws.send-String "after ping, Bye Bye"}
+            {dump ws.buffered-amount}
+        }
+        {after 2s do
+            {dump ws.buffered-amount}
+            {ws.send-ByteArray {ByteArray 0x6f, 0x6f, 0x6f}}
+            {dump ws.buffered-amount}
+        }
+        {after 5s do
+            {ws.close status-code = 1001, status-string = "abc"}
+            {dump ws.buffered-amount, ws.ready-state}
+        }
+    }
+    {event-loop}
+}
+{run}
+{exit 0}

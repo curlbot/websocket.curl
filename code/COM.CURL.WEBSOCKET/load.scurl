@@ -23,6 +23,5 @@
 {import base64-encode from CURL.UTIL.BASE64}
 
 {include "codec.scurl"}
-||--{include "md5.scurl"}
 {include "event.scurl"}
 {include "websock.scurl"}

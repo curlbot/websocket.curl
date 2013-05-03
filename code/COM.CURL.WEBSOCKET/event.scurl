@@ -17,7 +17,19 @@
 |||
 
 || events
-{define-class public open OpenEvent
+{doc-next
+    {purpose
+        Parent class for the various events that {docref WebSocket} uses.
+    }
+    {notes
+        Subclasses include {docref WebSocketOpenEvent},
+        {docref WebSocketCloseEvent},
+        {docref WebSocketMessageEvent},
+        {docref WebSocketPongEvent}, and
+        {docref WebSocketErrorEvent}.
+    }
+}
+{define-class public sealed WebSocketEvent
   {inherits Event}
 
   {constructor package {default}
@@ -25,22 +37,161 @@
   }
 }
 
-{define-class public open MessageEvent
-  {inherits Event}
-
-  field public-get private-set data:ByteArray
-
-  {constructor package {default data}
-    {construct-super}
-    set self.data = data
-  }
+{doc-next
+    {purpose
+        {docref WebSocketEvent} that {docref WebSocket} will enqueue when it
+        has finished connecting to a server endpoint and has successfully
+        finished the handshake confirming that the server endpoint is
+        compatible.
+    }
 }
-
-{define-class public open CloseEvent
-  {inherits Event}
+{define-class public sealed WebSocketOpenEvent
+  {inherits WebSocketEvent}
 
   {constructor package {default}
     {construct-super}
   }
 }
 
+{doc-next
+    {purpose
+        {docref WebSocketEvent} that {docref WebSocket} will enqueue when it
+        has received a complete TEXT or BINARY message.
+    }
+}
+{define-class public sealed WebSocketMessageEvent
+  {inherits WebSocketEvent}
+
+  {doc-next
+    {purpose
+        Will contain the bytes received, may be {ctext null} if there is no
+        data or if the message is of type TEXT.
+    }
+    {notes
+        The {docref ByteArray} will not be modified by {docref WebSocket},
+        so it may be held on to by the {docref EventHandler}.
+    }
+  }
+  field public-get constant data-bytes:#ByteArray
+
+  {doc-next
+    {purpose
+        Will contain the {docref String} received, may be {ctext null} if there is no
+        data or if the message is of type BINARY.
+    }
+  }
+  field public-get constant data-string:#String
+
+  {constructor package {default
+                            data-bytes:#ByteArray = null,
+                            data-string:#String = null
+                       }
+    {construct-super}
+    set self.data-bytes = data-bytes
+    set self.data-string = data-string
+  }
+}
+{doc-next
+    {purpose
+        {docref WebSocketEvent} that {docref WebSocket} will enqueue when it
+        has an error, may include many different sorts of errors.
+    }
+    {notes
+        Some errors will also trigger the {docref WebSocket} to close itself.
+    }
+}
+{define-class public sealed WebSocketErrorEvent
+  {inherits WebSocketEvent}
+
+  || FIXME: add enum with why it was an error too.
+
+  {doc-next
+    {purpose
+        May contain an explanitory message about the error that occured.
+    }
+  }
+  field public-get constant error-string:#String
+
+  {constructor package {default error-string:#String}
+    {construct-super}
+    set self.error-string = error-string
+  }
+}
+
+{doc-next
+    {purpose
+        {docref WebSocketEvent} that {docref WebSocket} will enqueue when it
+        has completed closing, which may be when an error has triggered an
+        unclean shutdown, or it may be from completing the close handshake
+        initiated by either side of the connection.
+    }
+}
+{define-class public sealed WebSocketCloseEvent
+  {inherits WebSocketEvent}
+
+  {doc-next
+    {purpose
+        The code (normally a value from {docref WebSocketCloseStatus}) that
+        was sent by the initiator of the close, or
+        {ctext WebSocketCloseStatus.close-abnormal.value} when the close
+        was due to a socket error or a connection failure.
+    }
+  }
+  field public-get constant code:int
+
+  {doc-next
+    {purpose
+        Some extra close data from whoever initiated the close, the format
+        is not defined by the protocol.
+    }
+  }
+  field public-get constant reason:#ByteArray
+
+  {doc-next
+    {purpose
+        Indicates if this was an orderly close handshake that completed or 
+        if it was some other sort of error.
+    }
+  }
+  field public-get constant clean?:bool
+
+  {constructor package {default
+                           code:int = WebSocketCloseStatus.normal.value,
+                           reason:#ByteArray = null,
+                           clean?:bool = true
+                       }
+    {construct-super}
+    set self.code = code
+    set self.reason = reason
+    set self.clean? = clean?
+  }
+}
+
+{doc-next
+    {purpose
+        {docref WebSocketEvent} that {docref WebSocket} will enqueue when it
+        has received a PONG message.  This could be in response to a PING
+        message from {docref WebSocket.send-ping} or it could be spontaniously
+        sent by a server endpoint.
+    }
+}
+{define-class public sealed WebSocketPongEvent
+  {inherits WebSocketEvent}
+
+  {doc-next
+    {purpose
+        Will contain the bytes received, may be {ctext null} if there is no
+        data.
+    }
+    {notes
+        The {docref ByteArray} will not be modified by {docref WebSocket},
+        so it may be held on to by the {docref EventHandler}.
+    }
+  }
+  field public-get constant data-bytes:#ByteArray
+
+  {constructor package {default data-bytes:#ByteArray = null}
+    {construct-super}
+    set self.data-bytes = data-bytes
+  }
+}

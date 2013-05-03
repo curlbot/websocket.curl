@@ -27,11 +27,12 @@
                      false
                  }
      do
-        {format out = stream, "%s", str}
+        {stream.write-one-string str}
     }
     {return bytes}
 }
 
+|#
 
 || hex encode/decode
 {define-proc {hex-encode bytes:ByteVec}:String
@@ -69,3 +70,4 @@
 {define-proc {hex-pair-to-int c1:char, c2:char}:int
     {return {hex-digit-to-int c1} * 16 + {hex-digit-to-int c2}}
 }
+#|
